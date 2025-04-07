@@ -42,6 +42,7 @@ make
 ./getrf $n $k $nb -p -c -v
 ```
 分别是方阵的边长，累计块大小和分块大小。
+
 如果有 `-p` 代表启用 pivoting
 如果有 `-c` 代表启用 compare with cusolver
 如果有 `-v` 代表校验后向误差
