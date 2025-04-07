@@ -48,7 +48,7 @@ make
 
 ### 测试数据如下
 
-这些数据都是采用 启用 pivoting 启用 compare with cusolver 不启用校验后向误差
+这些数据都是采用 启用 pivoting 启用 compare with cusolver 不启用校验后向误差，k 取 n / 2，nb 取 k / 2
 
 #### 单精度测试结果
 
