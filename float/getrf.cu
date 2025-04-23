@@ -318,20 +318,50 @@ int main(int argc, char* argv[]) {
                     } else {
                         if (restnum_panel < k - nb) {
                             for (int a = 0; a < nb; a++) {
-                                cublasSswap(
-                                    cublas_handle, j - i, A_d + j + i * n + a,
-                                    n,
-                                    A_d + j + i * n + ipiv_h_vector[j + a] - 1,
-                                    n);
+                                if constexpr (std::is_same_v<data_type, float>)
+                                    cublasSswap(cublas_handle, j - i,
+                                                reinterpret_cast<float*>(
+                                                    A_d + j + i * n + a),
+                                                n,
+                                                reinterpret_cast<float*>(
+                                                    A_d + j + i * n +
+                                                    ipiv_h_vector[j + a] - 1),
+                                                n);
+                                else if constexpr (std::is_same_v<data_type,
+                                                                  double>)
+                                    cublasDswap(cublas_handle, j - i,
+                                                reinterpret_cast<double*>(
+                                                    A_d + j + i * n + a),
+                                                n,
+                                                reinterpret_cast<double*>(
+                                                    A_d + j + i * n +
+                                                    ipiv_h_vector[j + a] - 1),
+                                                n);
                             }
                         }
                         if (restnum_panel > 0) {
                             for (int i = j; i < j + nb; i++) {
-                                cublasSswap(cublas_handle, restnum_panel,
-                                            A_d + j + (nb + j) * n + i - j, n,
+                                if constexpr (std::is_same_v<data_type, float>)
+                                    cublasSswap(
+                                        cublas_handle, restnum_panel,
+                                        reinterpret_cast<float*>(
+                                            A_d + j + (nb + j) * n + i - j),
+                                        n,
+                                        reinterpret_cast<float*>(
                                             A_d + j + (nb + j) * n +
-                                                ipiv_h_vector[i] - 1,
-                                            n);
+                                            ipiv_h_vector[i] - 1),
+                                        n);
+                                else if constexpr (std::is_same_v<data_type,
+                                                                  double>)
+                                    cublasDswap(
+                                        cublas_handle, restnum_panel,
+                                        reinterpret_cast<double*>(
+                                            A_d + j + (nb + j) * n + i - j),
+                                        n,
+                                        reinterpret_cast<double*>(
+                                            A_d + j + (nb + j) * n +
+                                            ipiv_h_vector[i] - 1),
+                                        n);
                             }
                         }
                     }
@@ -466,8 +496,21 @@ int main(int argc, char* argv[]) {
                             if ((j) >= nb) {
                                 target_row += nb * (j / nb);
                             }
-                            cublasSswap(cublas_handle, i, A_d + i + j, n,
-                                        A_d + i + target_row, n);
+                            if constexpr (std::is_same_v<data_type, float>)
+                                cublasSswap(
+                                    cublas_handle, i,
+                                    reinterpret_cast<float*>(A_d + i + j), n,
+                                    reinterpret_cast<float*>(A_d + i +
+                                                             target_row),
+                                    n);
+                            else if constexpr (std::is_same_v<data_type,
+                                                              double>)
+                                cublasDswap(
+                                    cublas_handle, i,
+                                    reinterpret_cast<double*>(A_d + i + j), n,
+                                    reinterpret_cast<double*>(A_d + i +
+                                                              target_row),
+                                    n);
                         }
                     }
 
@@ -478,9 +521,25 @@ int main(int argc, char* argv[]) {
                                 target_row += nb * (j / nb);
                             }
                             if (target_row >= 0 && target_row < n) {
-                                cublasSswap(
-                                    cublas_handle, k, A_d + (k + i) * n + (j),
-                                    n, A_d + (k + i) * n + (target_row), n);
+                                if constexpr (std::is_same_v<data_type, float>)
+                                    cublasSswap(
+                                        cublas_handle, k,
+                                        reinterpret_cast<float*>(
+                                            A_d + (k + i) * n + (j)),
+                                        n,
+                                        reinterpret_cast<float*>(
+                                            A_d + (k + i) * n + target_row),
+                                        n);
+                                else if constexpr (std::is_same_v<data_type,
+                                                                  double>)
+                                    cublasDswap(
+                                        cublas_handle, k,
+                                        reinterpret_cast<double*>(
+                                            A_d + (k + i) * n + (j)),
+                                        n,
+                                        reinterpret_cast<double*>(
+                                            A_d + (k + i) * n + target_row),
+                                        n);
                             }
                         }
                     }

@@ -1,9 +1,9 @@
 #!/bin/bash
 
 # 设置测试参数
-start_n=4096
+start_n=8192
 end_n=40960
-step_n=4096
+step_n=1024
 output_csv="getrf_results.csv"
 
 # 获取脚本所在的目录，并切换到 float/build 目录
