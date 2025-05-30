@@ -1,0 +1,16 @@
+CompileFlags:
+    Add: 
+        - "-I/usr/local/cuda-12.8/include"
+        - "--cuda-path=/usr/local/cuda-12.8"
+    Remove:
+        - "--options-file"
+        - "--extended-lambda"
+        - "--generate-code=arch=compute_87,code=[compute_87,sm_87]"
+        - "--generate-code=arch=compute_89,code=[compute_89,sm_89]"
+        - "--generate-code=arch=compute_90,code=[compute_90,sm_90]"
+        - "--generate-code=arch=compute_52,code=[compute_52,sm_52]"
+        - "-forward-unknown-to-host-compiler"
+    Compiler: /usr/local/cuda-12.8/bin/nvcc
+
+
+    

@@ -2,7 +2,7 @@
 
 # 设置测试参数
 start_n=4096
-end_n=40960
+end_n=65536
 step_n=4096
 output_csv="getrf_results.csv"
 
@@ -51,11 +51,12 @@ for (( n=start_n; n<=end_n; n+=step_n )); do
   cusolver_time=$(echo "$output" | awk '/cusolver lu time:/ {print $4}')
   db_time=$(echo "$output" | awk '/double-blocking LU:/ && /ms/ {print $3}')
   db_tflops=$(echo "$output" | awk '/double-blocking LU:/ && /TFLOPS/ {print $3}')
+  speed_up=$(echo "$output" | awk '/Speedup:/ {print $2}')
 
   # 检查是否成功提取到所有数据
-  if [ -n "$cusolver_time" ] && [ -n "$db_time" ] && [ -n "$db_tflops" ]; then
+  if [ -n "$cusolver_time" ] && [ -n "$db_time" ] && [ -n "$db_tflops" ] && [ -n "$speed_up" ]; then
     # 将数据追加到 CSV 文件
-    echo "$n,$db_time,$db_tflops,$cusolver_time" >> "$output_csv"
+    echo "$n,$db_time,$db_tflops,$cusolver_time,$speed_up" >> "$output_csv"
     echo "数据已追加到 $output_csv"
   else
     echo "警告: 未能从 n=$n 的输出中完整提取数据，跳过写入 CSV。"
