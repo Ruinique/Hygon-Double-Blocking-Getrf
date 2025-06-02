@@ -1,4 +1,13 @@
 {
     "C_Cpp.default.compilerPath": "/usr/bin/clang++",
-    "cmake.sourceDirectory": "/home/ruinique/Hygon-Double-Blocking-Getrf/float"
+    "cmake.sourceDirectory": "/home/ruinique/Hygon-Double-Blocking-Getrf/float",
+    "files.associations": {
+        "*.cu": "cuda-cpp",
+        "type_traits": "cpp",
+        "random": "cpp",
+        "new": "cpp",
+        "utility": "cpp",
+        "limits": "cpp",
+        "target": "cpp"
+    }
 }

@@ -5,19 +5,20 @@
 #include <cstring>
 #include <vector>
 
+#include "gemmul8.hpp"
 #include "getrf.cuh"
 
 #define SWAP_LEN_PANEL 2048
 
 using data_type = double;
 
-void trsm(cublasHandle_t cublasH, long m, long n, float alpha, float* A,
-          long lda, float* B, long ldb, long nb) {
+void trsm(cublasHandle_t cublasH, long m, long n, float alpha, float* A, long lda,
+          float* B, long ldb, long nb) {
     float sonefloat = 1.0, snegonefloat = -1.0;
     if (m <= nb) {
-        CUBLAS_CHECK(cublasStrsm(
-            cublasH, CUBLAS_SIDE_LEFT, CUBLAS_FILL_MODE_LOWER, CUBLAS_OP_N,
-            CUBLAS_DIAG_UNIT, m, n, &alpha, A, lda, B, ldb));
+        CUBLAS_CHECK(cublasStrsm(cublasH, CUBLAS_SIDE_LEFT, CUBLAS_FILL_MODE_LOWER,
+                                 CUBLAS_OP_N, CUBLAS_DIAG_UNIT, m, n, &alpha, A, lda,
+                                 B, ldb));
         return;
     }
 
@@ -28,13 +29,12 @@ void trsm(cublasHandle_t cublasH, long m, long n, float alpha, float* A,
                              &snegonefloat, A + m / 2, lda, B, ldb, &sonefloat,
                              B + m / 2, ldb));
 
-    trsm(cublasH, left, n, alpha, A + m / 2 + m / 2 * lda, lda, B + m / 2, ldb,
-         nb);
+    trsm(cublasH, left, n, alpha, A + m / 2 + m / 2 * lda, lda, B + m / 2, ldb, nb);
 }
 
 int parseArgs(int argc, char* argv[], size_t& n, size_t& k, size_t& nb,
               bool& verifyResult, bool& pivoting, bool& debug_mode,
-              bool& compare_with_cusolver, bool& use_cublas_swp);
+              bool& compare_with_cusolver, bool& use_cublas_swp, bool& use_int8gemm);
 
 template <typename T>
 void compareWithCusolver(thrust::device_vector<T>& A_device_vector, size_t n,
@@ -43,29 +43,27 @@ void compareWithCusolver(thrust::device_vector<T>& A_device_vector, size_t n,
 template <typename T>
 void computeMinusOfPAandLU(thrust::device_vector<T>& A_device_vector,
                            thrust::device_vector<T>& oriA_device_vector,
-                           thrust::device_vector<T>& P_device_vector, int n, cublasHandle_t cublas_handle);
+                           thrust::device_vector<T>& P_device_vector, int n,
+                           cublasHandle_t cublas_handle);
 
 template <typename T>
 void launchSwapByPivotingKernel(int* source_raw_ptr, int* target_raw_ptr,
                                 int swap_size, int swap_len, int stride, T* A_d,
-                                T* temp_d, int blocksPerGrid,
-                                int threadsPerBlock);
+                                T* temp_d, int blocksPerGrid, int threadsPerBlock);
 
 template <typename T, int threadsPerRow>
-__global__ void swapByPivotingKernelRead(int* source, int* target,
-                                         int swap_size, int swap_len,
-                                         int stride, T* A, T* temp);
+__global__ void swapByPivotingKernelRead(int* source, int* target, int swap_size,
+                                         int swap_len, int stride, T* A, T* temp);
 
 template <typename T, int threadsPerRow>
-__global__ void swapByPivotingKernelWrite(int* source, int* target,
-                                          int swap_size, int swap_len,
-                                          int stride, T* A, T* temp);
+__global__ void swapByPivotingKernelWrite(int* source, int* target, int swap_size,
+                                          int swap_len, int stride, T* A, T* temp);
 
 template <typename T, size_t threadsPerRow>
 __global__ void swapByPivotingKernel(int* __restrict__ source,
                                      int* __restrict__ target, int swap_size,
-                                     int swap_len, int stride,
-                                     T* __restrict__ A_d, T* __restrict__ temp);
+                                     int swap_len, int stride, T* __restrict__ A_d,
+                                     T* __restrict__ temp);
 
 struct DoubleBlockingLUBreakDownDetail {
     float tslu_time = 0.0f;
@@ -86,8 +84,10 @@ int main(int argc, char* argv[]) {
     bool debug_mode = false;
     bool compare_with_cusolver = false;
     bool use_cublas_swp = false;
-    int status = parseArgs(argc, argv, n, k, nb, verifyResult, pivoting,
-                           debug_mode, compare_with_cusolver, use_cublas_swp);
+    bool use_int8gemm = false;
+    const unsigned int num_moduli = 14;
+    int status = parseArgs(argc, argv, n, k, nb, verifyResult, pivoting, debug_mode,
+                           compare_with_cusolver, use_cublas_swp, use_int8gemm);
 
     if (status != 0) {
         printf("Please execute the above command\n");
@@ -123,15 +123,14 @@ int main(int argc, char* argv[]) {
     if (verifyResult) {
         P_device_vector.resize(n * n);
         P_d = thrust::raw_pointer_cast(P_device_vector.data());
-        thrust::for_each(
-            thrust::counting_iterator<size_t>(0),
-            thrust::counting_iterator<size_t>(n),
-            [P_d, n] __device__(size_t i) {
-                if constexpr (std::is_same_v<data_type, float>)
-                    P_d[i * n + i] = 1.0f;
-                else if constexpr (std::is_same_v<data_type, double>)
-                    P_d[i * n + i] = 1.0;
-            });
+        thrust::for_each(thrust::counting_iterator<size_t>(0),
+                         thrust::counting_iterator<size_t>(n),
+                         [P_d, n] __device__(size_t i) {
+                             if constexpr (std::is_same_v<data_type, float>)
+                                 P_d[i * n + i] = 1.0f;
+                             else if constexpr (std::is_same_v<data_type, double>)
+                                 P_d[i * n + i] = 1.0;
+                         });
         oriA_device_vector = A_device_vector;
         oriA_d = thrust::raw_pointer_cast(oriA_device_vector.data());
     }
@@ -162,9 +161,9 @@ int main(int argc, char* argv[]) {
     int buffer_size;
     auto A_raw_d = thrust::raw_pointer_cast(A_device_vector.data());
     if constexpr (std::is_same_v<data_type, float>) {
-        CUSOLVER_CHECK(cusolverDnSgetrf_bufferSize(
-            cusolver_handle, n, nb, reinterpret_cast<float*>(A_raw_d), n,
-            &buffer_size));
+        CUSOLVER_CHECK(cusolverDnSgetrf_bufferSize(cusolver_handle, n, nb,
+                                                   reinterpret_cast<float*>(A_raw_d),
+                                                   n, &buffer_size));
     } else if constexpr (std::is_same_v<data_type, double>) {
         CUSOLVER_CHECK(cusolverDnDgetrf_bufferSize(
             cusolver_handle, n, nb, reinterpret_cast<double*>(A_raw_d), n,
@@ -174,8 +173,7 @@ int main(int argc, char* argv[]) {
     data_type* tslu_workspace_d;
     CUDA_CHECK(
         cudaMalloc((void**)&tslu_workspace_d, sizeof(data_type) * buffer_size));
-    CUDA_CHECK(
-        cudaMemset(tslu_workspace_d, 0, sizeof(data_type) * buffer_size));
+    CUDA_CHECK(cudaMemset(tslu_workspace_d, 0, sizeof(data_type) * buffer_size));
     // 预分配 TSLU 状态
     int* devInfo_d;
     CUDA_CHECK(cudaMalloc((void**)&devInfo_d, sizeof(int)));
@@ -193,8 +191,7 @@ int main(int argc, char* argv[]) {
 
     for (int roll = 0; roll < roll_num; roll++) {
         //  执行 memset
-        CUDA_CHECK(
-            cudaMemset(tslu_workspace_d, 0, sizeof(data_type) * buffer_size));
+        CUDA_CHECK(cudaMemset(tslu_workspace_d, 0, sizeof(data_type) * buffer_size));
         CUDA_CHECK(cudaMemset(devInfo_d, 0, sizeof(int)));
         thrust::fill(ipiv_d_vector.begin(), ipiv_d_vector.end(), 0);
         thrust::fill(ipiv_h_vector.begin(), ipiv_h_vector.end(), 0);
@@ -205,21 +202,20 @@ int main(int argc, char* argv[]) {
             for (size_t j = i; j < i + k; j += nb) {
                 startTimer();
                 // TSLU 分解
-                data_type* A_d =
-                    thrust::raw_pointer_cast(A_device_vector.data());
+                data_type* A_d = thrust::raw_pointer_cast(A_device_vector.data());
                 if (pivoting) {
                     if constexpr (std::is_same_v<data_type, float>) {
                         CUSOLVER_CHECK(cusolverDnSgetrf(
                             cusolver_handle, n - j, nb,
                             reinterpret_cast<float*>(A_d + j + j * n), n,
-                            reinterpret_cast<float*>(tslu_workspace_d),
-                            ipiv_d + j, devInfo_d));
+                            reinterpret_cast<float*>(tslu_workspace_d), ipiv_d + j,
+                            devInfo_d));
                     } else if constexpr (std::is_same_v<data_type, double>) {
                         CUSOLVER_CHECK(cusolverDnDgetrf(
                             cusolver_handle, n - j, nb,
                             reinterpret_cast<double*>(A_d + j + j * n), n,
-                            reinterpret_cast<double*>(tslu_workspace_d),
-                            ipiv_d + j, devInfo_d));
+                            reinterpret_cast<double*>(tslu_workspace_d), ipiv_d + j,
+                            devInfo_d));
                     }
                 } else {
                     if constexpr (std::is_same_v<data_type, float>) {
@@ -250,19 +246,14 @@ int main(int argc, char* argv[]) {
                             if constexpr (std::is_same_v<data_type, float>) {
                                 CUBLAS_CHECK(cublasSswap(
                                     cublas_handle, n,
-                                    reinterpret_cast<float*>(P_d + global_idx),
-                                    n,
-                                    reinterpret_cast<float*>(P_d +
-                                                             global_pivot),
+                                    reinterpret_cast<float*>(P_d + global_idx), n,
+                                    reinterpret_cast<float*>(P_d + global_pivot),
                                     n));
-                            } else if constexpr (std::is_same_v<data_type,
-                                                                double>) {
+                            } else if constexpr (std::is_same_v<data_type, double>) {
                                 CUBLAS_CHECK(cublasDswap(
                                     cublas_handle, n,
-                                    reinterpret_cast<double*>(P_d + global_idx),
-                                    n,
-                                    reinterpret_cast<double*>(P_d +
-                                                              global_pivot),
+                                    reinterpret_cast<double*>(P_d + global_idx), n,
+                                    reinterpret_cast<double*>(P_d + global_pivot),
                                     n));
                             }
                         }
@@ -304,8 +295,8 @@ int main(int argc, char* argv[]) {
                             launchSwapByPivotingKernel(
                                 thrust::raw_pointer_cast(source_d.data()),
                                 thrust::raw_pointer_cast(target_d.data()),
-                                source_d.size(), j - i, n, A_d + j + i * n,
-                                temp_d, blocksPerGrid, threadsPerBlock);
+                                source_d.size(), j - i, n, A_d + j + i * n, temp_d,
+                                blocksPerGrid, threadsPerBlock);
                         }
                         if (restnum_panel > 0) {
                             launchSwapByPivotingKernel(
@@ -320,18 +311,17 @@ int main(int argc, char* argv[]) {
                             for (int a = 0; a < nb; a++) {
                                 if constexpr (std::is_same_v<data_type, float>)
                                     cublasSswap(cublas_handle, j - i,
-                                                reinterpret_cast<float*>(
-                                                    A_d + j + i * n + a),
+                                                reinterpret_cast<float*>(A_d + j +
+                                                                         i * n + a),
                                                 n,
                                                 reinterpret_cast<float*>(
                                                     A_d + j + i * n +
                                                     ipiv_h_vector[j + a] - 1),
                                                 n);
-                                else if constexpr (std::is_same_v<data_type,
-                                                                  double>)
+                                else if constexpr (std::is_same_v<data_type, double>)
                                     cublasDswap(cublas_handle, j - i,
-                                                reinterpret_cast<double*>(
-                                                    A_d + j + i * n + a),
+                                                reinterpret_cast<double*>(A_d + j +
+                                                                          i * n + a),
                                                 n,
                                                 reinterpret_cast<double*>(
                                                     A_d + j + i * n +
@@ -342,26 +332,23 @@ int main(int argc, char* argv[]) {
                         if (restnum_panel > 0) {
                             for (int i = j; i < j + nb; i++) {
                                 if constexpr (std::is_same_v<data_type, float>)
-                                    cublasSswap(
-                                        cublas_handle, restnum_panel,
-                                        reinterpret_cast<float*>(
-                                            A_d + j + (nb + j) * n + i - j),
-                                        n,
-                                        reinterpret_cast<float*>(
-                                            A_d + j + (nb + j) * n +
-                                            ipiv_h_vector[i] - 1),
-                                        n);
-                                else if constexpr (std::is_same_v<data_type,
-                                                                  double>)
-                                    cublasDswap(
-                                        cublas_handle, restnum_panel,
-                                        reinterpret_cast<double*>(
-                                            A_d + j + (nb + j) * n + i - j),
-                                        n,
-                                        reinterpret_cast<double*>(
-                                            A_d + j + (nb + j) * n +
-                                            ipiv_h_vector[i] - 1),
-                                        n);
+                                    cublasSswap(cublas_handle, restnum_panel,
+                                                reinterpret_cast<float*>(
+                                                    A_d + j + (nb + j) * n + i - j),
+                                                n,
+                                                reinterpret_cast<float*>(
+                                                    A_d + j + (nb + j) * n +
+                                                    ipiv_h_vector[i] - 1),
+                                                n);
+                                else if constexpr (std::is_same_v<data_type, double>)
+                                    cublasDswap(cublas_handle, restnum_panel,
+                                                reinterpret_cast<double*>(
+                                                    A_d + j + (nb + j) * n + i - j),
+                                                n,
+                                                reinterpret_cast<double*>(
+                                                    A_d + j + (nb + j) * n +
+                                                    ipiv_h_vector[i] - 1),
+                                                n);
                             }
                         }
                     }
@@ -393,18 +380,33 @@ int main(int argc, char* argv[]) {
 
                 detail.trsm_panel_time += stopTimer();
                 // 矩阵乘法更新
-                alpha = -1.0f;
-                data_type beta = 1.0f;
+                alpha = -1.0;
+                data_type beta = 1.0;
                 startTimer();
-                if constexpr (std::is_same_v<data_type, float>) {
+                if (use_int8gemm) {
+                    size_t size =
+                        gemmul8::workSize(n - nb - j, nb, nb + j - i, num_moduli);
+                    void* work_d;
+                    alpha = 1.0;
+                    beta = -1.0;
+                    CUDA_CHECK(cudaMalloc(&work_d, size));
+                    gemmul8::gemm<double>(
+                        cublas_handle, CUBLAS_OP_N, CUBLAS_OP_N, n - nb - j, nb,
+                        nb + j - i, reinterpret_cast<double*>(&alpha),
+                        reinterpret_cast<double*>(A_d + (nb + j) + i * n), n,
+                        reinterpret_cast<double*>(A_d + i + (nb + j) * n), n,
+                        reinterpret_cast<double*>(&beta),
+                        reinterpret_cast<double*>(A_d + (nb + j) + (nb + j) * n), n,
+                        num_moduli, true, work_d);
+                    CUDA_CHECK(cudaFree(work_d));
+                } else if constexpr (std::is_same_v<data_type, float>) {
                     CUBLAS_CHECK(cublasSgemm_v2(
                         cublas_handle, CUBLAS_OP_N, CUBLAS_OP_N, n - nb - j, nb,
                         nb + j - i, reinterpret_cast<float*>(&alpha),
                         reinterpret_cast<float*>(A_d + (nb + j) + i * n), n,
                         reinterpret_cast<float*>(A_d + i + (nb + j) * n), n,
                         reinterpret_cast<float*>(&beta),
-                        reinterpret_cast<float*>(A_d + (nb + j) + (nb + j) * n),
-                        n));
+                        reinterpret_cast<float*>(A_d + (nb + j) + (nb + j) * n), n));
                 } else if constexpr (std::is_same_v<data_type, double>) {
                     CUBLAS_CHECK(cublasDgemm_v2(
                         cublas_handle, CUBLAS_OP_N, CUBLAS_OP_N, n - nb - j, nb,
@@ -412,14 +414,12 @@ int main(int argc, char* argv[]) {
                         reinterpret_cast<double*>(A_d + (nb + j) + i * n), n,
                         reinterpret_cast<double*>(A_d + i + (nb + j) * n), n,
                         reinterpret_cast<double*>(&beta),
-                        reinterpret_cast<double*>(A_d + (nb + j) +
-                                                  (nb + j) * n),
+                        reinterpret_cast<double*>(A_d + (nb + j) + (nb + j) * n),
                         n));
                 }
 
                 detail.gemm_panel_time += stopTimer();
-                detail.gemm_panel_ops +=
-                    2.0f * (n - nb - j) * nb * (nb + j - i);
+                detail.gemm_panel_ops += 2.0f * (n - nb - j) * nb * (nb + j - i);
             }
 
             int restnum_kpanel = n - i - k;
@@ -500,16 +500,13 @@ int main(int argc, char* argv[]) {
                                 cublasSswap(
                                     cublas_handle, i,
                                     reinterpret_cast<float*>(A_d + i + j), n,
-                                    reinterpret_cast<float*>(A_d + i +
-                                                             target_row),
+                                    reinterpret_cast<float*>(A_d + i + target_row),
                                     n);
-                            else if constexpr (std::is_same_v<data_type,
-                                                              double>)
+                            else if constexpr (std::is_same_v<data_type, double>)
                                 cublasDswap(
                                     cublas_handle, i,
                                     reinterpret_cast<double*>(A_d + i + j), n,
-                                    reinterpret_cast<double*>(A_d + i +
-                                                              target_row),
+                                    reinterpret_cast<double*>(A_d + i + target_row),
                                     n);
                         }
                     }
@@ -522,24 +519,21 @@ int main(int argc, char* argv[]) {
                             }
                             if (target_row >= 0 && target_row < n) {
                                 if constexpr (std::is_same_v<data_type, float>)
-                                    cublasSswap(
-                                        cublas_handle, k,
-                                        reinterpret_cast<float*>(
-                                            A_d + (k + i) * n + (j)),
-                                        n,
-                                        reinterpret_cast<float*>(
-                                            A_d + (k + i) * n + target_row),
-                                        n);
-                                else if constexpr (std::is_same_v<data_type,
-                                                                  double>)
-                                    cublasDswap(
-                                        cublas_handle, k,
-                                        reinterpret_cast<double*>(
-                                            A_d + (k + i) * n + (j)),
-                                        n,
-                                        reinterpret_cast<double*>(
-                                            A_d + (k + i) * n + target_row),
-                                        n);
+                                    cublasSswap(cublas_handle, k,
+                                                reinterpret_cast<float*>(
+                                                    A_d + (k + i) * n + (j)),
+                                                n,
+                                                reinterpret_cast<float*>(
+                                                    A_d + (k + i) * n + target_row),
+                                                n);
+                                else if constexpr (std::is_same_v<data_type, double>)
+                                    cublasDswap(cublas_handle, k,
+                                                reinterpret_cast<double*>(
+                                                    A_d + (k + i) * n + (j)),
+                                                n,
+                                                reinterpret_cast<double*>(
+                                                    A_d + (k + i) * n + target_row),
+                                                n);
                             }
                         }
                     }
@@ -552,9 +546,8 @@ int main(int argc, char* argv[]) {
             data_type alpha = 1.0f;
             startTimer();
             if constexpr (std::is_same_v<data_type, float>) {
-                trsm(cublas_handle, k + i, k, alpha,
-                     reinterpret_cast<float*>(A_d), n,
-                     reinterpret_cast<float*>(A_d + (k + i) * n), n, 512);
+                trsm(cublas_handle, k + i, k, alpha, reinterpret_cast<float*>(A_d),
+                     n, reinterpret_cast<float*>(A_d + (k + i) * n), n, 512);
             } else if constexpr (std::is_same_v<data_type, double>) {
                 CUBLAS_CHECK(cublasDtrsm(
                     cublas_handle, CUBLAS_SIDE_LEFT, CUBLAS_FILL_MODE_LOWER,
@@ -569,18 +562,32 @@ int main(int argc, char* argv[]) {
             // 矩阵乘法更新
             alpha = -1.0f;
             data_type beta = 1.0f;
-            if constexpr (std::is_same_v<data_type, float>) {
+            if (use_int8gemm) {
+                alpha = 1.0;
+                beta = -1.0;
+                auto size = gemmul8::workSize(n - k - i, k, k + i, num_moduli);
+                void* work;
+                CUDA_CHECK(cudaMalloc(&work, size));
+                gemmul8::gemm(cublas_handle, CUBLAS_OP_N, CUBLAS_OP_N, n - k - i, k,
+                              k + i, reinterpret_cast<double*>(&alpha),
+                              reinterpret_cast<double*>(A_d + (k + i)), n,
+                              reinterpret_cast<double*>(A_d + (k + i) * n), n,
+                              reinterpret_cast<double*>(&beta),
+                              reinterpret_cast<double*>(A_d + (k + i) + (k + i) * n),
+                              n, num_moduli, false, work);
+                cudaFree(work);
+            } else if constexpr (std::is_same_v<data_type, float>) {
                 CUBLAS_CHECK(cublasSgemm(
-                    cublas_handle, CUBLAS_OP_N, CUBLAS_OP_N, n - k - i, k,
-                    k + i, reinterpret_cast<float*>(&alpha),
+                    cublas_handle, CUBLAS_OP_N, CUBLAS_OP_N, n - k - i, k, k + i,
+                    reinterpret_cast<float*>(&alpha),
                     reinterpret_cast<float*>(A_d + (k + i)), n,
                     reinterpret_cast<float*>(A_d + (k + i) * n), n,
                     reinterpret_cast<float*>(&beta),
                     reinterpret_cast<float*>(A_d + (k + i) + (k + i) * n), n));
             } else if constexpr (std::is_same_v<data_type, double>) {
                 CUBLAS_CHECK(cublasDgemm(
-                    cublas_handle, CUBLAS_OP_N, CUBLAS_OP_N, n - k - i, k,
-                    k + i, reinterpret_cast<double*>(&alpha),
+                    cublas_handle, CUBLAS_OP_N, CUBLAS_OP_N, n - k - i, k, k + i,
+                    reinterpret_cast<double*>(&alpha),
                     reinterpret_cast<double*>(A_d + (k + i)), n,
                     reinterpret_cast<double*>(A_d + (k + i) * n), n,
                     reinterpret_cast<double*>(&beta),
@@ -611,9 +618,8 @@ int main(int argc, char* argv[]) {
                           detail.gemm_kpanel_time;
 
     printf("double-blocking LU: %lf ms\n", total_lu_time / roll_num);
-    printf(
-        "double-blocking LU: %lf TFLOPS\n",
-        double(2.0 / 3.0) * std::pow(n, 3) * roll_num / (total_lu_time * 1e9));
+    printf("double-blocking LU: %lf TFLOPS\n",
+           double(2.0 / 3.0) * std::pow(n, 3) * roll_num / (total_lu_time * 1e9));
 
     if (compare_with_cusolver) {
         printf("Speedup: %f\n", cusolver_lu_time / total_lu_time);
@@ -642,7 +648,8 @@ int main(int argc, char* argv[]) {
  */
 int parseArgs(int argc, char* argv[], size_t& n, size_t& k, size_t& nb,
               bool& verifyResult, bool& pivoting, bool& debug_mode,
-              bool& compare_with_cusolver, bool& use_cublas_swp) {
+              bool& compare_with_cusolver, bool& use_cublas_swp,
+              bool& use_int8gemm) {
     if (argc == 2) {
         n = std::stoul(argv[1]);
         k = n / 2;
@@ -668,6 +675,8 @@ int parseArgs(int argc, char* argv[], size_t& n, size_t& k, size_t& nb,
                 compare_with_cusolver = true;
             } else if (strcmp(argv[i], "-s") == 0) {
                 use_cublas_swp = true;
+            } else if (strcmp(argv[i], "--use-int8gemm") == 0) {
+                use_int8gemm = true;
             }
     } else {
         printf("Default usage: %s <n>\n", argv[0]);
@@ -680,8 +689,10 @@ int parseArgs(int argc, char* argv[], size_t& n, size_t& k, size_t& nb,
 template <typename T>
 void computeMinusOfPAandLU(thrust::device_vector<T>& A_device_vector,
                            thrust::device_vector<T>& oriA_device_vector,
-                           thrust::device_vector<T>& P_device_vector, int n, cublasHandle_t cublas_handle) {
-
+                           thrust::device_vector<T>& P_device_vector, int n,
+                           cublasHandle_t cublas_handle) {
+    bool use_int8gemm = true;
+    const unsigned int num_moduli = 14;
     auto A_norm = computeFrobeniusNorm(n, n, oriA_device_vector);
     auto A_d = thrust::raw_pointer_cast(A_device_vector.data());
     auto oriA_d = thrust::raw_pointer_cast(oriA_device_vector.data());
@@ -692,21 +703,19 @@ void computeMinusOfPAandLU(thrust::device_vector<T>& A_device_vector,
     if constexpr (std::is_same_v<T, float>) {
         float alpha = 1.0f;
         float beta = 0.0f;
-        CUBLAS_CHECK(cublasSgemm_v2(cublas_handle, CUBLAS_OP_N, CUBLAS_OP_N, n,
-                                    n, n, reinterpret_cast<float*>(&alpha),
-                                    reinterpret_cast<float*>(P_d), n,
-                                    reinterpret_cast<float*>(oriA_d), n,
-                                    reinterpret_cast<float*>(&beta),
-                                    reinterpret_cast<float*>(PA_d), n));
+        CUBLAS_CHECK(cublasSgemm_v2(
+            cublas_handle, CUBLAS_OP_N, CUBLAS_OP_N, n, n, n,
+            reinterpret_cast<float*>(&alpha), reinterpret_cast<float*>(P_d), n,
+            reinterpret_cast<float*>(oriA_d), n, reinterpret_cast<float*>(&beta),
+            reinterpret_cast<float*>(PA_d), n));
     } else if constexpr (std::is_same_v<T, double>) {
         double alpha = 1.0;
         double beta = 0.0;
-        CUBLAS_CHECK(cublasDgemm_v2(cublas_handle, CUBLAS_OP_N, CUBLAS_OP_N, n,
-                                    n, n, reinterpret_cast<double*>(&alpha),
-                                    reinterpret_cast<double*>(P_d), n,
-                                    reinterpret_cast<double*>(oriA_d), n,
-                                    reinterpret_cast<double*>(&beta),
-                                    reinterpret_cast<double*>(PA_d), n));
+        CUBLAS_CHECK(cublasDgemm_v2(
+            cublas_handle, CUBLAS_OP_N, CUBLAS_OP_N, n, n, n,
+            reinterpret_cast<double*>(&alpha), reinterpret_cast<double*>(P_d), n,
+            reinterpret_cast<double*>(oriA_d), n, reinterpret_cast<double*>(&beta),
+            reinterpret_cast<double*>(PA_d), n));
     }
 
     dim3 gridDim((n + 15) / 16, (n + 15) / 16);
@@ -760,7 +769,19 @@ void computeMinusOfPAandLU(thrust::device_vector<T>& A_device_vector,
         });
     thrust::device_vector<T> LU_device_vector(n * n);
     auto LU_d = thrust::raw_pointer_cast(LU_device_vector.data());
-    if constexpr (std::is_same_v<T, float>) {
+    if (use_int8gemm) {
+        double alpha = 1.0;
+        double beta = 0.0;
+        size_t size = gemmul8::workSize(n, n, n, num_moduli);
+        void* work;
+        CUDA_CHECK(cudaMalloc(&work, size));
+        gemmul8::gemm(
+            cublas_handle, CUBLAS_OP_N, CUBLAS_OP_N, n, n, n,
+            reinterpret_cast<double*>(&alpha), reinterpret_cast<double*>(L_d), n,
+            reinterpret_cast<double*>(U_d), n, reinterpret_cast<double*>(&beta),
+            reinterpret_cast<double*>(LU_d), n, num_moduli, false, work);
+        CUDA_CHECK(cudaFree(work));
+    } else if constexpr (std::is_same_v<T, float>) {
         float alpha = 1.0f;
         float beta = 0.0f;
         CUBLAS_CHECK(cublasSgemm_v2(
@@ -771,12 +792,11 @@ void computeMinusOfPAandLU(thrust::device_vector<T>& A_device_vector,
     } else if constexpr (std::is_same_v<T, double>) {
         double alpha = 1.0;
         double beta = 0.0;
-        CUBLAS_CHECK(cublasDgemm_v2(cublas_handle, CUBLAS_OP_N, CUBLAS_OP_N, n,
-                                    n, n, reinterpret_cast<double*>(&alpha),
-                                    reinterpret_cast<double*>(L_d), n,
-                                    reinterpret_cast<double*>(U_d), n,
-                                    reinterpret_cast<double*>(&beta),
-                                    reinterpret_cast<double*>(LU_d), n));
+        CUBLAS_CHECK(cublasDgemm_v2(
+            cublas_handle, CUBLAS_OP_N, CUBLAS_OP_N, n, n, n,
+            reinterpret_cast<double*>(&alpha), reinterpret_cast<double*>(L_d), n,
+            reinterpret_cast<double*>(U_d), n, reinterpret_cast<double*>(&beta),
+            reinterpret_cast<double*>(LU_d), n));
     }
 
     // compute PA - LU
@@ -793,12 +813,11 @@ void computeMinusOfPAandLU(thrust::device_vector<T>& A_device_vector,
     } else if constexpr (std::is_same_v<T, double>) {
         auto alpha = 1.0;
         auto beta = -1.0;
-        CUBLAS_CHECK(cublasDgeam(cublas_handle, CUBLAS_OP_N, CUBLAS_OP_N, n, n,
-                                 reinterpret_cast<double*>(&alpha),
-                                 reinterpret_cast<double*>(PA_d), n,
-                                 reinterpret_cast<double*>(&beta),
-                                 reinterpret_cast<double*>(LU_d), n,
-                                 reinterpret_cast<double*>(PAminusLU_d), n));
+        CUBLAS_CHECK(cublasDgeam(
+            cublas_handle, CUBLAS_OP_N, CUBLAS_OP_N, n, n,
+            reinterpret_cast<double*>(&alpha), reinterpret_cast<double*>(PA_d), n,
+            reinterpret_cast<double*>(&beta), reinterpret_cast<double*>(LU_d), n,
+            reinterpret_cast<double*>(PAminusLU_d), n));
     }
 
     T Minus_norm = computeFrobeniusNorm(n, n, PAminusLU_device_vector);
@@ -830,27 +849,25 @@ void compareWithCusolver(thrust::device_vector<T>& A_device_vector, size_t n,
                                                        A_cusolver, n, &lwork))
         }
         T* dwork;
-        CUDA_CHECK(
-            cudaMalloc(reinterpret_cast<void**>(&dwork), lwork * sizeof(T)));
+        CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&dwork), lwork * sizeof(T)));
         int* dpiv;
-        CUDA_CHECK(
-            cudaMalloc(reinterpret_cast<void**>(&dpiv), n * sizeof(int)));
+        CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&dpiv), n * sizeof(int)));
         startTimer();
         if (pivoting) {
             if constexpr (std::is_same_v<T, float>) {
-                CUSOLVER_CHECK(cusolverDnSgetrf(
-                    cusolver_handle, n, n, A_cusolver, n, dwork, dpiv, dinfo));
+                CUSOLVER_CHECK(cusolverDnSgetrf(cusolver_handle, n, n, A_cusolver, n,
+                                                dwork, dpiv, dinfo));
             } else if constexpr (std::is_same_v<T, double>) {
-                CUSOLVER_CHECK(cusolverDnDgetrf(
-                    cusolver_handle, n, n, A_cusolver, n, dwork, dpiv, dinfo))
+                CUSOLVER_CHECK(cusolverDnDgetrf(cusolver_handle, n, n, A_cusolver, n,
+                                                dwork, dpiv, dinfo))
             }
         } else {
             if constexpr (std::is_same_v<T, float>) {
-                CUSOLVER_CHECK(cusolverDnSgetrf(
-                    cusolver_handle, n, n, A_cusolver, n, dwork, NULL, dinfo));
+                CUSOLVER_CHECK(cusolverDnSgetrf(cusolver_handle, n, n, A_cusolver, n,
+                                                dwork, NULL, dinfo));
             } else if constexpr (std::is_same_v<T, double>) {
-                CUSOLVER_CHECK(cusolverDnDgetrf(
-                    cusolver_handle, n, n, A_cusolver, n, dwork, NULL, dinfo))
+                CUSOLVER_CHECK(cusolverDnDgetrf(cusolver_handle, n, n, A_cusolver, n,
+                                                dwork, NULL, dinfo))
             }
         }
         cusolver_lu_time += stopTimer();
@@ -862,9 +879,8 @@ void compareWithCusolver(thrust::device_vector<T>& A_device_vector, size_t n,
 }
 
 template <typename T, int threadsPerRow>
-__global__ void swapByPivotingKernelRead(int* source, int* target,
-                                         int swap_size, int swap_len,
-                                         int stride, T* A_d, T* temp) {
+__global__ void swapByPivotingKernelRead(int* source, int* target, int swap_size,
+                                         int swap_len, int stride, T* A_d, T* temp) {
     // grid stride loop
     for (size_t idx = blockIdx.x * blockDim.x + threadIdx.x; idx < swap_size;
          idx += blockDim.x * gridDim.x) {
@@ -878,9 +894,9 @@ __global__ void swapByPivotingKernelRead(int* source, int* target,
 }
 
 template <typename T, int threadsPerRow>
-__global__ void swapByPivotingKernelWrite(int* source, int* target,
-                                          int swap_size, int swap_len,
-                                          int stride, T* A_d, T* temp) {
+__global__ void swapByPivotingKernelWrite(int* source, int* target, int swap_size,
+                                          int swap_len, int stride, T* A_d,
+                                          T* temp) {
     for (size_t idx = blockIdx.x * blockDim.x + threadIdx.x; idx < swap_size;
          idx += blockDim.x * gridDim.x) {
         if (idx < swap_size) {
@@ -895,8 +911,7 @@ __global__ void swapByPivotingKernelWrite(int* source, int* target,
 template <typename T, size_t threadsPerRow>
 __global__ void swapByPivotingKernel(int* __restrict__ source,
                                      int* __restrict__ target, int swap_size,
-                                     int swap_len, int stride,
-                                     T* __restrict__ A_d,
+                                     int swap_len, int stride, T* __restrict__ A_d,
                                      T* __restrict__ temp) {
     auto grid = cooperative_groups::this_grid();
     auto gridStride = blockDim.x * gridDim.x;
@@ -929,8 +944,7 @@ __global__ void swapByPivotingKernel(int* __restrict__ source,
 template <typename T>
 void launchSwapByPivotingKernel(int* source_raw_ptr, int* target_raw_ptr,
                                 int swap_size, int swap_len, int stride, T* A_d,
-                                T* temp_d, int blocksPerGrid,
-                                int threadsPerBlock) {
+                                T* temp_d, int blocksPerGrid, int threadsPerBlock) {
     if (swap_len < SWAP_LEN_PANEL) {
         void* args[] = {reinterpret_cast<void*>(&source_raw_ptr),
                         reinterpret_cast<void*>(&target_raw_ptr),
@@ -941,15 +955,14 @@ void launchSwapByPivotingKernel(int* source_raw_ptr, int* target_raw_ptr,
                         reinterpret_cast<void*>(&temp_d)};
         using KernelType = decltype(&swapByPivotingKernel<T, 16>);
         KernelType kernel_ptr = &swapByPivotingKernel<T, 16>;
-        CUDA_CHECK(
-            cudaLaunchCooperativeKernel(reinterpret_cast<void*>(kernel_ptr),
-                                        blocksPerGrid, threadsPerBlock, args));
+        CUDA_CHECK(cudaLaunchCooperativeKernel(reinterpret_cast<void*>(kernel_ptr),
+                                               blocksPerGrid, threadsPerBlock,
+                                               args));
         CUDA_CHECK(cudaDeviceSynchronize());
     } else {
         for (int i = 0; i < swap_len;
              i += (swap_len + threadsPerBlock - 1) / threadsPerBlock) {
-            auto each_swap_len =
-                (swap_len + threadsPerBlock - 1) / threadsPerBlock;
+            auto each_swap_len = (swap_len + threadsPerBlock - 1) / threadsPerBlock;
             auto swap_len_panel = std::min(swap_len - i, each_swap_len);
             auto A_d_panel = A_d + i * stride;
             void* args[] = {reinterpret_cast<void*>(&source_raw_ptr),
@@ -961,9 +974,9 @@ void launchSwapByPivotingKernel(int* source_raw_ptr, int* target_raw_ptr,
                             reinterpret_cast<void*>(&temp_d)};
             using KernelType = decltype(&swapByPivotingKernel<T, 16>);
             KernelType kernel_ptr = &swapByPivotingKernel<T, 16>;
-            CUDA_CHECK(cudaLaunchCooperativeKernel(
-                reinterpret_cast<void*>(kernel_ptr), blocksPerGrid,
-                threadsPerBlock, args));
+            CUDA_CHECK(
+                cudaLaunchCooperativeKernel(reinterpret_cast<void*>(kernel_ptr),
+                                            blocksPerGrid, threadsPerBlock, args));
             CUDA_CHECK(cudaDeviceSynchronize());
         }
     }
